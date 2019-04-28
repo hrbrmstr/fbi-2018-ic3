@@ -1,8 +1,6 @@
 ---
 title: "2018 FBI IC3 PDF Data Wrangling"
-output: 
-  html_document:
-    keep_md: true
+output: github_document
 editor_options: 
   chunk_output_type: console
 ---
