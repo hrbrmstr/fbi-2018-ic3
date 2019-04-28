@@ -1,0 +1,384 @@
+---
+title: "2018 FBI IC3 PDF Data Wrangling"
+output: 
+  html_document:
+    keep_md: true
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.retina = 2,
+  collapse = TRUE
+)
+```
+
+```{r libs}
+library(readxl)
+library(ggbeeswarm)
+library(pdftools)
+library(stringi)
+library(hrbrthemes)
+library(ggrepel)
+library(tidyverse)
+```
+
+```{r annual_summary, fig.width = 800/72, fig.height = 500/72}
+tibble(
+  year = 2014:2018,
+  complaints = c(269422, 288012, 298728, 301580, 351937),
+  losses = c(800.5, 1070.7, 1450.7, 1418.7, 2706.4)
+) -> ic3_summary
+
+write_csv(ic3_summary, here::here("data/2018-ic3-annual-summary.csv"))
+
+ggplot(ic3_summary, aes(complaints, losses)) +
+  geom_path(
+    arrow = arrow(type = "closed", length = unit(12, "pt")),
+    color = "#31739C"
+  ) +
+  geom_point(color = "#31739C") +
+  geom_label_repel(
+    aes(label = year), family = font_rc, size = c(rep(3, 4), 4),
+    color = c(rep("#3B454A", 4), "black"),
+    fontface = c(rep("plain", 4), "bold")
+  ) +
+  scale_x_comma(limits = c(0, NA)) +
+  scale_y_continuous(label = scales::dollar, limits = c(0, NA)) +
+  labs(
+    x = "Number of Complaints", y = "Losses (USD, millions)",
+    title = "Both Incident Count and Total Losses Related to Cybercrime\nSkyrocketed in the 2018 Edition of the FBI IC3 Report",
+    subtitle = "Zero baseline; Point labels denote IC3 summary year data",
+    caption = "Source: 2018 FBI IC3; Page 5 'IC3 Complaint Statistics 2014-2018'"
+  ) +
+  theme_ipsum_rc()
+```
+
+```{r loss, fig.width=1000/72, fig.height=400/72}
+ic3 <- pdf_text(here::here("raw/2018_IC3Report.pdf"))
+
+ic3[[16]] %>% 
+  stri_split_lines() %>% 
+  unlist() %>% 
+  stri_trim_both() -> l
+
+l[which(stri_detect_regex(l, "^Under")):which(stri_detect_regex(l, "^Over 6"))] %>% 
+  stri_split_regex("[[:space:]]{3,}", simplify = TRUE) %>% 
+  as.data.frame(stringsAsFactors = FALSE) %>% 
+  set_names("age_group", "incidents", "losses") %>% 
+  as_tibble() %>% 
+  mutate(losses = stri_replace_first_fixed(losses, "$", "")) %>% 
+  type_convert(
+    col_types = cols(
+      age_group = col_character(),
+      incidents = col_number(),
+      losses = col_number()
+    )
+  ) -> loss
+
+write_csv(loss, here::here("data/2018-fbi-ic3-loss-by-age.csv"))
+
+mutate(loss, `Loss Ratio (USD, milions)` = losses/incidents) %>% 
+  rename(
+    `Total Losses (USD, milions)` = losses,
+    `Total Incidents` = incidents
+  ) %>% 
+  mutate(age_group = stri_replace_first_fixed(age_group, " ", "\n")) %>% 
+  mutate(age_group = factor(age_group, age_group)) %>% 
+  gather(measure, value, -age_group) %>% 
+  mutate(
+    measure = factor(measure, levels = c(
+      "Total Incidents", "Total Losses (USD, milions)", "Loss Ratio (USD, milions)"))
+  ) %>% 
+  ggplot(aes(age_group, value)) +
+  geom_col(width=0.45, fill = "#31739C") +
+  scale_x_discrete() +
+  scale_y_comma() +
+  facet_wrap(~measure, scales = "free") +
+  labs(
+    x = NULL, y = "Loss Ratio (total losses/victim count)",
+    title = "In 2018, Older Victims Generally Lost More Overall and Per-Incident Than Younger Victims",
+    subtitle = "Note that 40-49 age group had more incients than older groups but fewer overall losses.",
+    caption = "NOTE: Free Y Scale\nSource: 2018 FBI IC3; Page 16 '2018 Victims by Age Group'"
+  ) +
+  theme_ipsum_rc(grid="Y")
+```
+
+```{r by-category, fig.width=800/72, fig.height=500/72}
+ic3[[19]] %>% 
+  stri_split_lines() %>% 
+  unlist() %>% 
+  keep(stri_detect_regex, "^[[:upper:]]") %>% 
+  keep(stri_detect_regex, "[[:digit:]]") %>% 
+  stri_replace_first_regex("([[:digit:]])   ([[:alpha:]\\*])", "$1\t$2") %>% 
+  stri_split_fixed("\t") %>% 
+  unlist() %>% 
+  keep(stri_detect_regex, " [[:digit:]]") %>% 
+  stri_match_first_regex("([^[:digit:]]+)([[:digit:],]+)$") %>% 
+  .[,2:3] %>% 
+  as.data.frame(stringsAsFactors=FALSE) %>% 
+  as_tibble() %>% 
+  mutate_all(.funs = stri_trim_both) %>% 
+  type_convert(
+    col_types = cols(
+      V1 = col_character(),
+      V2 = col_number()
+    )
+  ) %>% 
+  mutate(V1 = case_when(
+    stri_detect_fixed(V1, "IPR/Copy") ~ "IPR/Copyright and Counterfeit",
+    TRUE ~ V1
+  )) %>% 
+  set_names(c("crime", "victim_count")) %>% 
+  head(-2) %>% 
+  arrange(desc(victim_count)) -> victims
+
+ic3[[20]] %>% 
+  stri_split_lines() %>% 
+  unlist() %>% 
+  keep(stri_detect_regex, "^    [[:upper:]]") %>% 
+  keep(stri_detect_regex, "[[:digit:]]") %>% 
+  stri_trim_both() %>% 
+  stri_replace_first_regex("([[:digit:]])   ([[:alpha:]\\*])", "$1\t$2") %>% 
+  stri_split_fixed("\t") %>% 
+  unlist() %>% 
+  stri_replace_first_regex("([[:digit:]])[[:space:]]+([[:alpha:]\\*])", "$1\t$2") %>% 
+  stri_split_fixed("\t") %>%  
+  unlist() %>% 
+  keep(stri_detect_regex, "\\$[[:digit:]]") %>% 
+  stri_match_first_regex("([^\\$]+)([\\$[:digit:],\\.]+)$") %>% 
+  .[,2:3] %>% 
+  as.data.frame(stringsAsFactors=FALSE) %>% 
+  as_tibble() %>% 
+  mutate_all(.funs = stri_trim_both) %>% 
+  mutate(V2 = stri_replace_first_fixed(V2, "$", "")) %>% 
+  type_convert(
+    col_types = cols(
+      V1 = col_character(),
+      V2 = col_number()
+    )
+  ) %>% 
+  mutate(V1 = case_when(
+    stri_detect_fixed(V1, "IPR/Copy") ~ "IPR/Copyright and Counterfeit",
+    stri_detect_fixed(V1, "Malware/Sca") ~ "Malware/Scareware/Virus",
+    stri_detect_fixed(V1, "Harassment/T") ~ "Harassment/Threats of Violence",
+    stri_detect_fixed(V1, "Ransomware") ~ "Ransomware",
+    stri_detect_fixed(V1, "Denial of Service") ~ "Denial of Service/TDoS",
+    stri_detect_fixed(V1, "Re-Shipping") ~ "Re-shipping",
+    TRUE ~ V1
+  )) %>% 
+  set_names(c("crime", "loss")) %>% 
+  head(-2) %>% 
+  left_join(victims, "crime") %>% 
+  mutate(loss = loss / 1000000) -> crime_types
+
+write_csv(crime_types, here::here("data/2018-fbi-ic3-loss-by-crime-type.csv"))
+
+ggplot() +
+  geom_point(
+    data = mutate(crime_types, color = case_when(
+      (loss >= 100) | (victim_count >= 20000) ~ "#E85E26",
+      TRUE ~ "#31739C"
+    )), 
+    aes(victim_count, loss, color = I(color))
+  ) +
+  geom_label_repel(
+    data = filter(crime_types, (loss >= 100) | (victim_count >= 20000)),
+    aes(victim_count, loss, label = crime),
+    size = 3, family = font_rc
+  ) +
+  scale_x_comma() +
+  scale_y_continuous(label = scales::dollar) +
+  labs(
+    x = "Victim count", y = "Loss (USD, millions)",
+    title = "[Business] E-mail Account Compromise was the Most Profitable\nIC3 Crime in 2018 with over $1.2 billion (USD) in Losses",
+    subtitle = "Markers only on IC3 crimes with ≥$100m (USD) losses or ≥20,000 victims ",
+    caption = "Source: 2018 FBI IC3; Pages 19-20 '2018 Crime Types'"
+  ) +
+  theme_ipsum_rc(grid="XY")
+```
+
+```{r cat-tbl}
+arrange(crime_types, desc(loss)) %>% 
+  select(`Crime` = 1, `Loss (USD, millions)` = 2, `Victim Count` = 3) %>% 
+  gt::gt() %>% 
+  gt::fmt_number("Victim Count", decimals = 0) %>% 
+  gt::fmt_currency("Loss (USD, millions)", decimals = 2)
+```
+
+```{r state}
+ic3[[21]] %>%
+  stri_split_lines() %>% 
+  unlist() %>% 
+  keep(stri_detect_regex, "^[[:digit:]]") %>% 
+  stri_replace_first_regex("([[:digit:],]+)[[:space:]]+([[:digit:]])", "$1\t$2") %>% 
+  stri_split_fixed("\t") %>% 
+  unlist() %>% 
+  stri_replace_first_regex("^[[:digit:] ]+", "") %>% 
+  stri_replace_first_regex("[[:space:]]+([[:digit:]])", "\t$1") %>% 
+  stri_split_fixed("\t", simplify = TRUE) %>% 
+  as.data.frame(stringsAsFactors=FALSE) %>% 
+  as_tibble() %>% 
+  mutate_all(.funs = stri_trim_both) %>% 
+  mutate(V1 = case_when(
+    stri_detect_fixed(V1, "Northern Marina") ~ "Northern Mariana Islands",
+    TRUE ~ V1
+  )) %>% 
+  type_convert(
+    col_types = cols(
+      V1 = col_character(),
+      V2 = col_number()
+    )
+  ) %>% 
+  set_names(c("state", "victim_count")) -> state_vics
+
+ic3[[23]] %>%
+  stri_split_lines() %>% 
+  unlist() %>% 
+  keep(stri_detect_regex, "^[[:space:]]+[[:digit:]]") %>% 
+  stri_replace_first_regex("([[:digit:],]+)[[:space:]]+([[:digit:]])", "$1\t$2") %>% 
+  stri_split_fixed("\t") %>% 
+  unlist() %>% 
+  stri_replace_first_regex("^[[:digit:] ]+", "") %>% 
+  stri_replace_first_regex("[[:space:]]+([[:digit:]])", "\t$1") %>% 
+  stri_split_fixed("\t", simplify = TRUE) %>% 
+  as.data.frame(stringsAsFactors=FALSE) %>% 
+  as_tibble() %>% 
+  mutate_all(.funs = stri_trim_both) %>% 
+  mutate(V1 = case_when(
+    stri_detect_fixed(V1, "Northern Marina") ~ "Northern Mariana Islands",
+    TRUE ~ V1
+  )) %>% 
+  type_convert(
+    col_types = cols(
+      V1 = col_character(),
+      V2 = col_number()
+    )
+  ) %>% 
+  set_names(c("state", "subject_earnings")) -> subj_earnings
+
+ic3[[22]] %>%
+  stri_split_lines() %>% 
+  unlist() %>% 
+  keep(stri_detect_regex, "^    [[:digit:]]") %>% 
+  stri_trim_both() %>% 
+  stri_replace_first_regex("([[:digit:],]+)[[:space:]]+([[:digit:]])", "$1\t$2") %>% 
+  stri_split_fixed("\t") %>% 
+  unlist() %>% 
+  stri_replace_first_regex("^[[:digit:] ]+", "") %>% 
+  stri_replace_first_regex("[[:space:]]+\\$([[:digit:]])", "\t$1") %>% 
+  stri_split_fixed("\t", simplify = TRUE) %>% 
+  as.data.frame(stringsAsFactors=FALSE) %>% 
+  as_tibble() %>%
+  mutate_all(.funs = stri_trim_both) %>% 
+  type_convert(
+    col_types = cols(
+      V1 = col_character(),
+      V2 = col_number()
+    )
+  ) %>%  
+  set_names(c("state", "loss")) %>% 
+  left_join(subj_earnings, "state") %>% 
+  left_join(state_vics, "state") %>% 
+  mutate(subject_earnings = subject_earnings / 1000000) %>% 
+  mutate(loss = loss / 1000000) -> by_state
+
+if (!file.exists(here::here("raw/2018-pop-est.xlsx"))) {
+  download.file(
+    url = "https://www2.census.gov/programs-surveys/popest/tables/2010-2018/national/totals/nst-est2018-01.xlsx", 
+    destfile = here::here("raw/2018-pop-est.xlsx")
+  )
+}
+
+read_excel(here::here("raw/2018-pop-est.xlsx"), skip=9, col_names = FALSE) %>% 
+  select(state = 1, pop_2018 = 12) %>% 
+  mutate(state = stri_replace_first_fixed(state, ".", "")) %>%
+  filter(!is.na(state), !is.na(pop_2018)) %>% 
+  add_row(state = "U.S. Virgin Islands", pop_2018 = 104914) %>% 
+  add_row(state = "Guam", pop_2018 = 165718) %>% 
+  add_row(state = "U.S. Minor Outlying Islands", pop_2018 = 270) %>% 
+  add_row(state = "American Samoa", pop_2018 = 55679) %>% 
+  add_row(state = "Northern Mariana Islands", pop_2018 = 55194) -> pops
+
+left_join(by_state, pops, "state")  %>% 
+  mutate(
+    loss_per_vic = loss/victim_count,
+    frac = victim_count / pop_2018
+  ) -> by_state
+
+write_csv(by_state, here::here("data/2018-fbi-ic3-loss-by-state.csv"))
+```
+
+```{r state-tbl}
+arrange(by_state, desc(frac)) %>%
+  mutate(loss_per_vic = loss_per_vic * 1000000) %>% 
+  select(
+    `State` = 1, 
+    `Victim Count` = 4, 
+    `Loss (USD, millions)` = 3, 
+    `Loss per Victim (USD)` = 6, 
+    `% Population Impacted` = 7,
+    `Subject Earnings (USD, millions)` = 2
+  ) %>% 
+  gt::gt() %>% 
+  gt::fmt_number("Victim Count", decimals = 0) %>% 
+  gt::fmt_currency("Loss (USD, millions)", decimals = 2) %>% 
+  gt::fmt_currency("Loss per Victim (USD)", decimals = 2) %>% 
+  gt::fmt_percent("% Population Impacted", decimals = 4) %>% 
+  gt::fmt_currency("Subject Earnings (USD, millions)", decimals = 2) 
+```
+
+```{r state-slice, fig.width=700/72, fig.height=600/72}
+by_state <- mutate(by_state, loss_per_vic = loss_per_vic * 1000000)
+
+ggplot(by_state) +
+  geom_quasirandom(aes(x="", loss_per_vic)) -> gg
+
+gb <- ggplot_build(gg)
+
+as_tibble(gb$data[[1]]) %>% 
+  select(x, y) %>% 
+  left_join(by_state, c("y" = "loss_per_vic")) %>% 
+  rename(loss_per_vic = y) -> gd
+
+ggplot() +
+  geom_blank(data = gd, aes(x, loss_per_vic)) +
+  geom_hline(
+    yintercept = round(median(gd$loss_per_vic)),
+    linetype = "dotted", color = "#3B454A"
+  ) +
+  geom_label(
+    data = data.frame(),
+    aes(
+      x = 0.5, y = round(median(gd$loss_per_vic)),
+      label = sprintf(
+        "2018 IC3 Median\nPer In-State\nVictim Loss\n($%s USD)", 
+        scales::comma(round(median(gd$loss_per_vic)))
+      )
+    ), size = 3, family = font_rc, hjust = 0, vjust = 0,
+    label.size = 0, lineheight = 0.875
+  ) +
+  geom_point(
+    data = mutate(gd, color = case_when(
+      (loss_per_vic >= 10000) ~ "#E85E26",
+      TRUE ~ "#31739C"
+    )), 
+    aes(x=x, loss_per_vic, color = I(color))
+  ) +
+  geom_label_repel(nudge_y = 2500,
+                   data = filter(gd, loss_per_vic >= 10000),
+                   aes(x=x, loss_per_vic, label = state),
+                   size = 3, family = font_rc
+  ) +
+  scale_x_continuous(expand = c(0,0.125)) +
+  scale_y_continuous(label = scales::dollar) +
+  labs(
+    x = "Victim count", y = "Loss (USD, millions)",
+    title = "U.S. Virgin Islands Residents Were Hit Hardest\nin IC3 2018 Catalogued Incidents",
+    subtitle = "Markers only on IC3 states with ≥$10K (USD) losses per in-state victim",
+    caption = "Source: 2018 FBI IC3; Pages 21-22 '2018 Overall State Statistics'"
+  ) +
+  theme_ipsum_rc(grid="XY") 
+```
