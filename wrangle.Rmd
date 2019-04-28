@@ -30,7 +30,7 @@ tibble(
   losses = c(800.5, 1070.7, 1450.7, 1418.7, 2706.4)
 ) -> ic3_summary
 
-write_csv(ic3_summary, here::here("data/2018-ic3-annual-summary.csv"))
+write_csv(ic3_summary, here::here("data/2018-fbi-ic3-annual-summary.csv"))
 
 ggplot(ic3_summary, aes(complaints, losses)) +
   geom_path(
